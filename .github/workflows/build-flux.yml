@@ -1,0 +1,122 @@
+name: Build Flux Launcher
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-flux.yml'
+      - 'ZalithLauncher/**'
+      - 'LayerController/**'
+      - 'ColorPicker/**'
+      - 'CardGrid/**'
+      - 'Terracotta/**'
+      - 'InputMap/**'
+      - 'Guide/**'
+      - 'PetLib/**'
+      - 'LWJGL/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - 'gradle.properties'
+
+concurrency:
+  group: flux-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 37.2, build tools and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-37.2" "build-tools;37.0.0" "ndk;25.2.9519653"
+
+      - name: Configure Flux application id
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("ZalithLauncher/build.gradle.kts")
+          text = path.read_text()
+
+          if 'val fluxApplicationId' not in text:
+              text = text.replace(
+                  'val zalithPackageName = "com.movtery.zalithlauncher"',
+                  'val zalithPackageName = "com.movtery.zalithlauncher"\nval fluxApplicationId = "com.fluxmc.launcher"',
+                  1,
+              )
+
+          text = text.replace(
+              'applicationId = zalithPackageName\n        applicationIdSuffix = ".v2"',
+              'applicationId = fluxApplicationId',
+              1,
+          )
+
+          if 'applicationId = fluxApplicationId' not in text:
+              raise SystemExit("Failed to patch Flux application id")
+
+          path.write_text(text)
+          PY
+          grep -n "applicationId" ZalithLauncher/build.gradle.kts
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Flux arm64 debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew -Darch=arm64 \
+            -Plauncher_name=FluxLauncher \
+            -Plauncher_app_name="Flux Launcher" \
+            -Plauncher_short_name=Flux \
+            -Purl_home=https://github.com/2016ibragimov223-wq/ZalithLauncher2 \
+            -Plauncher_version_code=300000 \
+            -Plauncher_version_name=1.0.0 \
+            :ZalithLauncher:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Collect APK metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          find ZalithLauncher/build/outputs/apk/debug -type f -name '*.apk' -print
+          sha256sum ZalithLauncher/build/outputs/apk/debug/*.apk | tee ZalithLauncher/build/outputs/apk/debug/SHA256SUMS.txt
+
+      - name: Upload Flux APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluxLauncher-1.0.0-arm64-debug
+          path: |
+            ZalithLauncher/build/outputs/apk/debug/*.apk
+            ZalithLauncher/build/outputs/apk/debug/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 9
